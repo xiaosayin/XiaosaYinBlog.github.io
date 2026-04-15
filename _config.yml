@@ -68,6 +68,7 @@ markdown: kramdown
 highlighter: rouge
 kramdown:
   input: GFM                            # use Github Flavored Markdown !important
+  math_engine: mathjax                  # 启用 LaTeX 数学公式解析
 
 
 
