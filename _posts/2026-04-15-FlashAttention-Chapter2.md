@@ -6,6 +6,7 @@ date:       2026-04-15 				# 时间
 author:     BY 						# 作者
 header-img: img/post-bg-2015.jpg 	#这篇文章标题背景图片
 catalog: true 						# 是否归档
+auto_heading_numbering: true       # 启用标题自动编号（h2/h3/h4）
 tags:								#标签
     - Cuda, Flash Attention
 ---
