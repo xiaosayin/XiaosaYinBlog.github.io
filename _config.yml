@@ -47,6 +47,11 @@ defaults:
       type: "posts"
     values:
       published: true
+  - scope:
+      path: "_posts/2026-04-15-FlashAttention-Chapter2.md"
+      type: "posts"
+    values:
+      published: true
 
 # Gems
 # from PR#40, to support local preview for Jekyll 3.0
