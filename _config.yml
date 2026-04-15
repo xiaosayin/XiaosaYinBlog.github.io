@@ -35,7 +35,18 @@ paginate: 10
 exclude: ["less","node_modules","Gruntfile.js","package.json","README.md"]
 anchorjs: true                          # if you want to customize anchor. check out line:181 of `post.html`
 
-
+# 文章可见性控制：默认隐藏所有 _posts，只放行你自己的文章
+defaults:
+  - scope:
+      path: ""
+      type: "posts"
+    values:
+      published: false
+  - scope:
+      path: "_posts/2026-04-10-FirstBlog.md"
+      type: "posts"
+    values:
+      published: true
 
 # Gems
 # from PR#40, to support local preview for Jekyll 3.0
