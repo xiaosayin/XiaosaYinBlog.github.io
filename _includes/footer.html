@@ -234,6 +234,51 @@
 <script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
 {% endif %}
 
+<!-- Auto heading numbering (per-post opt-in) -->
+{% if page.layout == "post" and page.auto_heading_numbering %}
+<script>
+    (function () {
+        var container = document.querySelector('.post-container');
+        if (!container) return;
+
+        var headings = container.querySelectorAll('h2, h3, h4');
+        var h2 = 0, h3 = 0, h4 = 0;
+
+        headings.forEach(function (heading) {
+            if (heading.getAttribute('data-auto-numbered') === 'true') return;
+
+            var tag = heading.tagName.toLowerCase();
+            var prefix = '';
+
+            if (tag === 'h2') {
+                h2 += 1;
+                h3 = 0;
+                h4 = 0;
+                prefix = h2 + '. ';
+            } else if (tag === 'h3') {
+                if (h2 === 0) h2 = 1;
+                h3 += 1;
+                h4 = 0;
+                prefix = h2 + '.' + h3 + ' ';
+            } else if (tag === 'h4') {
+                if (h2 === 0) h2 = 1;
+                if (h3 === 0) h3 = 1;
+                h4 += 1;
+                prefix = h2 + '.' + h3 + '.' + h4 + ' ';
+            }
+
+            if (prefix) {
+                var marker = document.createElement('span');
+                marker.className = 'heading-number-marker';
+                marker.textContent = prefix;
+                heading.insertBefore(marker, heading.firstChild);
+                heading.setAttribute('data-auto-numbered', 'true');
+            }
+        });
+    })();
+</script>
+{% endif %}
+
 
 <!-- Side Catalog -->
 {% if page.catalog %}
