@@ -562,7 +562,7 @@ __forceinline__ __device__ constexpr void copy_warp_fragment_transposed_SM2RF(
     constexpr int col_fragments = CFG.smem_cols / ELEMS_PER_VEC4_ACCESS;
     // col_fragments = 128/ 8 = 16
     constexpr int col_fragments_per_iter = WARP_SIZE / rows_per_iter;
-    // col_fragments_per_iter = 32 / 2 = 16, 每轮处理 col_fragments_per_iter
+    // col_fragments_per_iter = 32 / 16 = 2, 每轮处理 col_fragments_per_iter
  
     const int thread_row = lane_id % rows_per_iter; // 和上面加载 Q, K 没什么不同
     const int thread_col_fragment = lane_id / rows_per_iter;
