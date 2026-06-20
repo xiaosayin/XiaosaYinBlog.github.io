@@ -515,7 +515,7 @@ __forceinline__ __device__ constexpr void copy_warp_fragment_SM2RF(
 
     // col_fragments = 128/8 = 16
     constexpr int col_fragments = CFG.smem_cols / ELEMS_PER_VEC4_ACCESS;
-    // col_fragments_per_iter = 32 / 2 = 16,每轮处理 16 个
+    // col_fragments_per_iter = 32 / 16 = 2,每轮处理 16 个
     constexpr int col_fragments_per_iter = WARP_SIZE / rows_per_iter;
 
     // 32 % 2 
