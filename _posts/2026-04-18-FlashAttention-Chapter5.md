@@ -13,21 +13,42 @@ tags:
 
 ## 简介
 
-在 Chapter4 中，我们通过 swizzling 消除了主要的 SMEM bank conflicts，性能已经接近 reference。  
-这一章进入 Cutlass 风格的 GEMM 优化阶段，重点是进一步提升 overlap 与可扩展性。
+在上一部分中，我们实现了 swizzling，并通过消除 bank conflict（存储体冲突）取得了显著的 $2\times$ 性能提升。我们的 kernel 现在在 RTX 3090 上已达到参考实现性能的 $98\%$。
 
-本章实现 3 组渐进优化：
+在本部分中，我们将实现 CUTLASS 所采用的标准 GEMM 优化技术。CUTLASS 是 NVIDIA 面向高性能线性代数 kernel 的 C++ 模板库。由于我们已经获得了大部分可挖掘的性能收益，接下来的改进幅度可能看起来更为有限。不过，这些技术对于以下目标至关重要：
 
-1. **Kernel 3**：`GMEM -> SMEM` eager loading（double buffering）
-2. **Kernel 4**：片上 LD/ST 与计算交错（fragment interleaving）
-3. **Kernel 5**：`SMEM -> RF` double buffering
+- **隐藏内存延迟（Memory latency hiding）**：将数据传输与计算重叠执行，以减少空闲时间。
+- **降低寄存器压力（Register pressure reduction）**：支持更大的 block size，以及更多 kernel 配置。
 
-虽然在当前配置下，后两者并非都带来正向收益，但它们是后续 auto-tuning 的关键能力。
+在当前配置下，某些优化甚至可能带来轻微的性能回退；但它们能够使其他 block size 获得更好的性能，并在后续部分中提供可供自动调优的变量。
 
-## Kernel 3：提前加载 K/V（GMEM->SMEM 双缓冲）
+我们将逐步实现三项优化：
 
-在 Kernel 2 里，`K/V` 往往“即用即取”，导致 warp 在等待 GMEM 传输时空转。  
-profile 显示 `long_scoreboard` stall 仍较高，因此我们要把加载时机前移。
+1. Kernel 3：双缓冲加载 K/V（Eager K/V Loading）
+
+我们将在 GMEM $\rightarrow$ SMEM 层级实现双缓冲：在计算当前 $K^{(i)}$ 和 $V^{(i)}$ block 的同时，加载下一组 $K^{(j)}$ 和 $V^{(j)}$ block。
+
+这项经典优化技术将 GMEM 数据传输与计算重叠执行，使 GMEM 停顿减少 $93\%$。
+
+2. Kernel 4：Fragment 交错加载（Fragment Interleaving）
+
+我们不会在计算前将完整的 tile 全部加载到 RF，而是将它们划分为 sub-tile，并将加载过程与矩阵运算交错执行。
+
+这会缩短第一次 SMEM $\rightarrow$ RF 传输与第一次 GEMM 运算之间的时间间隔，同时显著降低所有 block 配置下的寄存器压力。
+
+3. Kernel 5：SMEM $\rightarrow$ RF 双缓冲
+
+我们将把双缓冲扩展到 fragment 加载，为隐藏 `ldmatrix` 延迟分配额外的寄存器空间。
+
+尽管该优化在当前配置下会带来轻微的性能回退，但它能为其他对自动调优至关重要的 block size 带来显著的性能收益。
+
+## Kernel 3：双缓冲加载 K/V（GMEM->SMEM 双缓冲）
+
+在 Kernel 2 里，`K/V` 往往“即用即取”，导致 warp 在等待 GMEM 传输时空转。
+
+这一低效问题在我们的性能分析中表现得非常明显：**$15.15\%$ 的 warp 停顿**来自等待 GMEM 传输（`long_scoreboard`），而参考 kernel 中该比例约为 $0.43\%$。这表明，通过更好的内存调度，我们仍有相当大的优化空间。
+
+**解决方案：**在计算前一批数据时，更早地开始加载 block，使数据传输在真正需要这些数据之前完成。  
 
 ### 安全加载点
 
