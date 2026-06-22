@@ -430,57 +430,116 @@ Fragment 交错（Fragment interleaving）达成了一项重要的里程碑：�
   </figcaption>
 </figure>
 
-书签
 ## Kernel 5：SMEM->RF 双缓冲
 
-与 Kernel 3 类似，这一步把双缓冲思想继续推进到 `ldmatrix` 阶段：
+正如我们在 Kernel 3 中对 GMEM $\to$ SMEM 传输采用双缓冲一样，我们也可以对从 SMEM $\to$ RF 的 fragment 加载进行双缓冲。
 
-- 在寄存器中为下一组 fragments 预留额外 stage
-- 当前 stage 参与 `mma` 时，后台预取下一 stage
-- 迭代时在两个 stage 间 toggle
+这样做有助于隐藏 `ldmatrix` 指令的延迟，但代价是更高的寄存器压力。
 
-由于这一层是 warp-synchronous 路径，一般不需要显式 CTA barrier。
+为此，我们会沿着 $k$ 维, 为额外的一组 fragment 分配寄存器（对于 $QK^T$ 为 $d_{\text{head}}$，对于 $PV$ 为 $B_c$）。随后，在 matmul 循环开始之前，我们先将第一组 fragment 加载到第一组寄存器中。在循环内部，我们会在处理当前这一组 fragment 之前，先加载下一组 fragment；这样一来，当 tensor core 完成当前这一组 fragment 的计算时，下一组 fragment 理应已经完成加载。在两次迭代之间，我们会交换用于加载的那组寄存器。
 
-### 存储与 matmul 结构变化
+其概念化方式与前一个 kernel 相同，不同之处在于：这里的作用域是 warp 级而不是 CTA 级，并且每个操作都是 warp 同步的，因此我们不需要显式 barrier。
 
-为支持 staged buffering，RF 存储增加 stage 维度，例如：
+<figure style="text-align:center; margin: 16px auto;">
+  <img src="{{ site.baseurl }}/img/flashAttention/chapter5/mma-Double-Buffering-Shorter.svg" alt="mma-Double-Buffering-Shorter" style="width: 30%; max-width: 980px; height: auto;">
+  <figcaption style="margin-top: 8px; color: #666; font-size: 14px;">
+    图 10：SMEM->RF 双缓冲示意
+  </figcaption>
+</figure>
 
+
+### 代码层面的改变
+#### 存储
+为支持 staged buffering，RF 存储增加 stage 维度，如：
+
+对 $Q, K^{(j)}, V^{(j)}$ 而言:
 ```cpp
 uint32_t input[rows/8][2];
 // -> 
 uint32_t input[2][rows/8][2];
 ```
 
+对 $P$ 而言:(其实没变化)
+```cpp
+uint32_t input[rows/8][cols/8];
+// becomes
+uint32_t input[1][rows/8][cols/8];
+```
+
+对 $S 和 O$ 而言:
+```cpp
+float accum[n/8][m/4];
+// becomes
+float accum[1][n/8][m/4];
+``` 
+
 `matmul()` 采用 stage toggle：
 
 ```cpp
-int A_stage = 0, B_stage = 0;
-A.copy_SM2RF(A_stage, 0);
-B.copy_SM2RF(B_stage, 0);
-
-for (int k = 0; k < GEMM::TotalKFragments; k += 2) {
-    int k_load = k + 2;
-    if (k_load < GEMM::TotalKFragments) {
-        A.copy_SM2RF(A_stage_toggle ^ A_stage, k_load);
-        B.copy_SM2RF(B_stage_toggle ^ B_stage, k_load);
+template <typename GEMM>
+__forceinline__ __device__ constexpr void matmul(
+	typename GEMM::A_t &A,
+	typename GEMM::B_t &B,
+    typename GEMM::C_t &C) {
+    // If tensor_t::load_entire_block_into_rf is set for either A_t or B_t, then
+    // we assume the block has already been loaded.
+    using A_t = typename GEMM::A_t; // Q or P
+    using B_t = typename GEMM::B_t; // K or V
+ 
+    constexpr int fragments_per_iter = 2;
+ 
+	  // This is 1 for Q and 0 for P. 
+    // 这里其实就是 P 已经完全在 RF 里面了, 不需要双缓冲
+    // 0 ^ 1 = 1, 1 ^ 1 = 0
+    // x ^ 0 always = x
+    constexpr int A_stage_toggle = A_t::mma_load_stages - 1; 
+    constexpr int B_stage_toggle = B_t::mma_load_stages - 1; // 1 for K & V
+ 
+    int A_stage = 0;
+    int B_stage = 0;
+ 
+    // True for Q, False for P (calculated & stored in RF)
+    if constexpr (!A_t::load_entire_block_into_rf) {
+        A.copy_SM2RF(A_stage, 0); // copy first Q sub-tile
     }
-    warp_fragment_mma_f32_accum(A.data(A_stage), B.data(B_stage), C.data(0), A_col_offset, B_col_offset);
+    B.copy_SM2RF(B_stage, 0); // copy first K or V sub-tile
+
+    // GEMM::TotalKFragments is
+    // - d_head / 8 for QK^T
+    // - B_c / 8    for PV
+    #pragma unroll
+
+    for (int k = 0; k < GEMM::TotalKFragments; k += fragments_per_iter) {
+        int k_load_fragment = k + fragments_per_iter;
+        if (k_load_fragment < GEMM::TotalKFragments) {
+            // True for Q, false for P. // 在计算前预取下一批 Q
+            if constexpr (!A_t::load_entire_block_into_rf) {
+                A.copy_SM2RF(A_stage_toggle ^ A_stage, k_load_fragment);
+            }
+            // 在计算前预取下一批 K/V
+            B.copy_SM2RF(B_stage_toggle ^ B_stage, k_load_fragment);
+        }
+
+    int A_col_offset = A_t::load_entire_block_into_rf ? k : 0;
+    int B_col_offset = B_t::load_entire_block_into_rf ? k : 0;
+    // Perform sub-tile-wise outer products.
+    warp_fragment_mma_f32_accum(
+        A.data(A_stage), B.data(B_stage), C.data(0),
+        A_col_offset, B_col_offset
+    );
+
     A_stage ^= A_stage_toggle;
     B_stage ^= B_stage_toggle;
 }
+
 ```
 
-<figure style="text-align:center; margin: 16px auto;">
-  <img src="{{ site.baseurl }}/img/flashAttention/chapter5/mma-Double-Buffering-Shorter.svg" alt="mma-Double-Buffering-Shorter" style="width: 90%; max-width: 980px; height: auto;">
-  <figcaption style="margin-top: 8px; color: #666; font-size: 14px;">
-    图 10：SMEM->RF 双缓冲示意
-  </figcaption>
-</figure>
+
 
 ### Kernel 5 效果
 
-在当前配置下出现轻微回退：约 `100.0% -> 99.6%` reference。  
-但该优化在其他 block 配置中可带来最高约 `4%` 的收益，因此对后续 auto-tuning 仍然非常关键。
+对 SMEM $\to$ RF 采用双缓冲，在我们当前的配置（$B_r = B_c = 64$）下表现出**轻微的性能回退**：相较于参考实现，性能从 $100\%$ 降至 $99.6\%$。不过，这种回退是**与具体配置相关的**——在最终 kernel 的其他 block 配置下，该优化可带来**最高达 $4\%$ 的性能提升**，因此对于全面的自动调优（auto-tuning）而言，这一优化仍然是不可或缺的。
+
 
 <figure style="text-align:center; margin: 16px auto;">
   <img src="{{ site.baseurl }}/img/flashAttention/chapter5/RTX3090_tflops_5_all.svg" alt="RTX3090_tflops_5_all" style="width: 90%; max-width: 960px; height: auto;">
@@ -499,3 +558,77 @@ for (int k = 0; k < GEMM::TotalKFragments; k += 2) {
 
 从工程角度看，这些优化不只是追某一组配置的峰值，更是在构建“可调参、可迁移”的 kernel 结构。  
 下一章将继续推进：通过 FP 指令融合与 auto-tuning，争取整体超过 reference。
+
+## 附录--一些 profile 方法论
+
+warp stall 的拆解结果揭示了一些性能回退：
+
+| Stall | Kernel 4 | Kernel 5 | Delta |
+|---|---:|---:|---:|
+| `barrier` | 3.66% | 4.37% | +0.71% |
+| `mio_throttle` | 2.18% | 2.40% | +0.22% |
+
+### `mio_throttle` Stall（+0.22%）
+
+双缓冲会产生更密集的内存指令模式，从而更快地使内存指令队列（`mio`）达到饱和。
+
+下面我们来看一下，在 SASS 层面，针对 $Q$ 和 $K^{(j)}$ 的 `ldmatrix` 代码块起始部分。
+
+Kernel 4 在 6 条 `ldmatrix` 指令之间穿插了 19 条算术操作，这种天然的间隔有效避免了队列饱和：
+
+`Kernel4.asm`
+```asm
+// ...
+LDSM.16.M88.4 R88,  [R177+0x4000] ;  // 6 ldmatrix instructions
+LDSM.16.M88.4 R148, [R157] ;
+LDSM.16.M88.4 R112, [R172+0x4000] ;
+LDSM.16.M88.4 R36,  [R174+0x4000] ;
+LDSM.16.M88.4 R92,  [R183+0x4000] ;
+LDSM.16.M88.4 R144, [R155] ;
+LDGDEPBAR ;
+MOV R128, R88 ;                       // 19 instructions between
+IMAD.MOV.U32 R129, RZ, RZ, R90 ;
+LOP3.LUT R88, R156, 0x7, R5, 0x78, !PT ;
+MOV R90, R89 ;
+IMAD.SHL.U32 R178, R88, 0x8, RZ ;
+MOV R96, R112 ;
+IMAD.MOV.U32 R97, RZ, RZ, R114 ;
+MOV R141, R115 ;
+HMMA.16816.F32 R104, R148.reuse, R90, RZ ;
+LOP3.LUT R176, R178.reuse, 0x800, R159, 0xfe, !PT ;
+IMAD.MOV.U32 R140, RZ, RZ, R113 ;
+LOP3.LUT R175, R178, 0x1000, R159, 0xfe, !PT ;
+IMAD.MOV.U32 R133, RZ, RZ, R38 ;
+SHF.L.U32 R176, R176, 0x1, RZ ;
+IMAD.MOV.U32 R137, RZ, RZ, R94 ;
+SHF.L.U32 R175, R175, 0x1, RZ ;
+IMAD.MOV.U32 R38, RZ, RZ, R37 ;
+LOP3.LUT R188, R178, R159, RZ, 0xfc, !PT ;
+LDSM.16.M88.4 R88, [R176+0x4000] ;    // next ldmatrix
+```
+
+
+另一方面，Kernel 5 在原先那 6 条 `ldmatrix` 指令的基础上，又将额外的一条 `ldmatrix` 提前到前面执行；并且在下一次内存操作之前仅执行了 5 条指令，这会带来更高的队列压力：
+
+`Kernel5.asm`
+```asm
+        LDSM.16.M88.4 R92, [R192+0x4000] ; // 7 ldmatrix instructions
+        LDSM.16.M88.4 R144, [R159] ;
+        LDSM.16.M88.4 R128, [R179+0x4000] ;
+        LDSM.16.M88.4 R88, [R183+0x4000] ;
+        LDSM.16.M88.4 R36, [R181+0x4000] ;
+        LDSM.16.M88.4 R148, [R156] ;
+        LDSM.16.M88.4 R132, [R186+0x4000] ;
+        LDGDEPBAR ;
+        IMAD.MOV.U32 R137, RZ, RZ, R94 ; // only 5 instructions
+        MOV R94, R93 ;
+        MOV R136, R92 ;
+        HMMA.16816.F32 R104, R144.reuse, R94, RZ ;
+        LDSM.16.M88.4 R92, [R195+0x4000] ; // next ldmatrix
+```
+
+这使得由 $Q$ 和 $K^{(j)}$ 加载所导致的 `mio_throttle` stall 总占比从 $47.6\%$ 上升到 $50.2\%$。
+
+### `stall_barrier` 增加（+0.71%）
+
+`barrier` stall 的增加更为复杂，并不能直接归因于 `mio_throttle` 瓶颈，尽管内存指令队列压力很可能在其中起到了一部分作用。更一般地说，这一现象反映的是：当指令模式发生变化时，编译器调度策略的更广泛变化，以及 Ampere 微架构中复杂的 warp 调度交互所共同产生的影响。
