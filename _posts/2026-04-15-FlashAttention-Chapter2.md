@@ -243,7 +243,7 @@ uint32_t input[rows/8][cols/8];  // each register represents one (8x8) fragment 
 float accum[m/8][n/4];  // each pair of registers represents one (8x8) fragment unit
 ```
 
-以 $(16,64)$ 的输出为例，每个线程存放 (2,8) fragment 的元素碎片, 总计 (2,8) x2 = 32 的元素碎片,且同一个 fragment 的 2 个元素碎片在寄存器中地址需连续, `accum[2][16]` 需要 32 个 float 槽位; (这里原文写成 64 个 registers 就很让人费解,所以按照我的讲述来就可以了).
+以 $(16,64)$ 的输出为例，每个线程存放 (2,8) fragment 的元素碎片, 总计 (2,8) x2 = 32 的元素碎片,且同一个 fragment 的 2 个元素碎片在寄存器中地址需连续, `accum[2][16]` 需要 32 个 float 槽位; 
 
 从逻辑视角看，对应的 `mma` 运算可写为：
 
@@ -676,7 +676,7 @@ __device__ void ldmatrix_x4_transpose(
 
 *MMA `m16n8k16` 指令的操作数形状定义*
 
-这个表的 registers 单位大小是 uint32_t, 原文里面在不同地方混淆 register 的单位大小, 看起来让人疑惑;  
+这个表的 registers 单位大小是 uint32_t, 不要混淆 register 的单位大小, 否则看起来让人疑惑;  
 
 接下来将基于上述形状约束，说明我们在 kernel 中对应执行的 load/store 操作路径。
 
