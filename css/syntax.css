@@ -20,6 +20,8 @@
  */
 
 .highlight pre, pre, .highlight .hll { background-color: #f8f8f8; border: 1px solid #ccc; padding: 6px 10px; border-radius: 3px; }
+.highlight .hll { background-color: #fff8c5; border: 0; border-radius: 0; display: block; margin: 0 -10px; padding: 0 10px; }
+.code-line-highlight { background-color: #fff8c5; display: block; margin: 0 -10px; padding: 0 10px; white-space: pre; }
 .highlight .c { color: #999988; font-style: italic; }
 .highlight .err { color: #a61717; background-color: #e3d2d2; }
 .highlight .k { font-weight: bold; }

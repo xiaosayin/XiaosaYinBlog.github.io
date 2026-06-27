@@ -76,17 +76,17 @@ defaults:
       path: "_posts/2026-04-18-FlashAttention-Appendix.md"
       type: "posts"
     values:
-      published: true
+      published: false
   - scope:
       path: "_posts/2026-04-18-FlashAttention-Appendix-A.md"
       type: "posts"
     values:
-      published: true
+      published: false
   - scope:
       path: "_posts/2026-04-18-FlashAttention-Appendix-B.md"
       type: "posts"
     values:
-      published: true
+      published: false
 
 # Gems
 # from PR#40, to support local preview for Jekyll 3.0
